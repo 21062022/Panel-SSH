@@ -171,10 +171,19 @@ EOF
 
 puerto_valido(){ [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
 
+# Muestra el proceso que escucha; separa TCP/UDP para evitar falsos positivos
+# de versiones antiguas de ss que no interpretan bien el filtro combinado.
+mostrar_uso_puerto(){
+  local p="$1" salida=""
+  salida="$(ss -H -ltnp "sport = :$p" 2>/dev/null || true)"$'\n'"$(ss -H -lunp "sport = :$p" 2>/dev/null || true)"
+  [ -n "${salida//$'\n'/}" ] && echo "$salida" | sed '/^[[:space:]]*$/d; s/^/    /'
+}
+
 # Devuelve 0 únicamente si otro proceso ya está escuchando el puerto.
 puerto_ocupado_por_otro(){
   local p="$1" servicio="${2:-}" salida pid
-  salida="$(ss -Hltnup "( sport = :$p )" 2>/dev/null || true)"
+  salida="$(ss -H -ltnp "sport = :$p" 2>/dev/null || true)"$'\n'"$(ss -H -lunp "sport = :$p" 2>/dev/null || true)"
+  salida="$(sed '/^[[:space:]]*$/d' <<< "$salida")"
   [ -z "$salida" ] && return 1
   if [ -n "$servicio" ]; then
     pid="$(systemctl show -p MainPID --value "$servicio" 2>/dev/null || true)"
@@ -188,10 +197,10 @@ puerto_ocupado_por_otro(){
 # Evita duplicar un puerto entre BHTTP, WebSocket y BadVPN, incluso si los
 # protocolos son distintos. También detecta nginx/apache u otro proceso ajeno.
 puerto_disponible(){
-  local p="$1" servicio="$2"
+  local p="$1" servicio="$2" ws_service="${WS_SERVICE:-bhttp-ws}"
   puerto_valido "$p" || return 1
-  if [ "$servicio" != "$SERVICE" ] && systemctl is-active --quiet "$SERVICE" 2>/dev/null && [ "$p" = "$PUERTO" ]; then return 1; fi
-  if [ "$servicio" != "$WS_SERVICE" ] && systemctl is-active --quiet "$WS_SERVICE" 2>/dev/null && [ "$p" = "$WSPORT" ]; then return 1; fi
+  if [ "$servicio" != "$SERVICE" ] && [ -n "$PUERTO" ] && systemctl is-active --quiet "$SERVICE" 2>/dev/null && [ "$p" = "$PUERTO" ]; then return 1; fi
+  if [ "$servicio" != "$ws_service" ] && [ -n "$WSPORT" ] && systemctl is-active --quiet "$ws_service" 2>/dev/null && [ "$p" = "$WSPORT" ]; then return 1; fi
   if [ "$servicio" != "$BADVPN_SERVICE" ] && systemctl is-active --quiet "$BADVPN_SERVICE" 2>/dev/null && [ "$p" = "$BADVPN_PORT" ]; then return 1; fi
   ! puerto_ocupado_por_otro "$p" "$servicio"
 }
@@ -273,6 +282,7 @@ instalar_servidor(){
       PUERTO="$nuevo_puerto"
     else
       fail "Puerto inválido, repetido o usado por otro servicio."
+      mostrar_uso_puerto "$nuevo_puerto"
       pausa; return 1
     fi
   else
@@ -1641,14 +1651,7 @@ ws_fila_panel(){
 
 # Devuelve 0 si el puerto lo usa OTRO programa (no nuestro proxy).
 ws_puerto_ocupado(){
-  local p="$1" l mp
-  l="$(ss -Hltnp "( sport = :$p )" 2>/dev/null)"
-  [ -z "$l" ] && return 1
-  mp="$(systemctl show -p MainPID --value "$WS_SERVICE" 2>/dev/null)"
-  if [[ "$mp" =~ ^[0-9]+$ ]] && [ "$mp" -gt 0 ] && grep -q "pid=$mp," <<< "$l"; then
-    return 1
-  fi
-  return 0
+  puerto_ocupado_por_otro "$1" "$WS_SERVICE"
 }
 
 # ------------------------------------------------------------------------------
@@ -1934,14 +1937,15 @@ ws_instalar(){
     if puerto_valido "$nuevo" && puerto_disponible "$nuevo" "$WS_SERVICE"; then
       WSPORT="$nuevo"
     else
-      fail "Puerto inválido, repetido o usado por otro servicio."; pausa; return 1
+      fail "Puerto inválido, repetido o usado por otro servicio."
+      mostrar_uso_puerto "$nuevo"; pausa; return 1
     fi
   elif [ -z "$WSPORT" ]; then
     fail "Debes indicar un puerto para activar WebSocket."; pausa; return 1
   fi
   if ws_puerto_ocupado "$WSPORT"; then
     fail "El puerto $WSPORT está en uso por otro programa:"
-    ss -ltnp "( sport = :$WSPORT )" 2>/dev/null | sed 's/^/    /'
+    mostrar_uso_puerto "$WSPORT"
     info "Apaga ese servicio (nginx/apache) o elige otro puerto."
     pausa; return 1
   fi
