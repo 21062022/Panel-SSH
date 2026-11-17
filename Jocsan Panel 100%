@@ -331,6 +331,21 @@ instalar_badvpn(){
       [ -x "$x" ] && { bin="$x"; break; }
     done
     [ -z "$bin" ] && bin="$(command -v badvpn-udpgw 2>/dev/null || true)"
+    # Focal no publica el paquete badvpn. En ese caso se compila SOLO udpgw
+    # desde la fuente oficial, con un único trabajo y baja prioridad para no
+    # saturar el VPS mientras se construye.
+    if [ -z "$bin" ]; then
+      local src="/usr/local/src/bhttp-badvpn-udpgw"
+      info "El paquete no existe en este Ubuntu; preparando BadVPN UDP Gateway..."
+      DEBIAN_FRONTEND=noninteractive apt-get install -y git cmake build-essential >> "$log" 2>&1 || true
+      rm -rf "$src"
+      if git clone --depth 1 https://github.com/ambrop72/badvpn.git "$src" >> "$log" 2>&1 && \
+         nice -n 10 cmake -S "$src" -B "$src/build" -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1 >> "$log" 2>&1 && \
+         nice -n 10 cmake --build "$src/build" -- -j1 >> "$log" 2>&1 && \
+         install -m 0755 "$src/build/udpgw/badvpn-udpgw" /usr/local/bin/badvpn-udpgw >> "$log" 2>&1; then
+        bin="/usr/local/bin/badvpn-udpgw"
+      fi
+    fi
   fi
   if [ -z "$bin" ]; then
     fail "No se pudo instalar badvpn-udpgw. Detalle: $CONFIG_DIR/badvpn-install.log"
