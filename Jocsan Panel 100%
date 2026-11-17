@@ -300,7 +300,11 @@ instalar_badvpn(){
     mkdir -p "$CONFIG_DIR"
     # En Ubuntu, badvpn está en el repositorio universe. No ocultamos errores:
     # quedan registrados para que el panel informe una causa útil.
-    if command -v add-apt-repository >/dev/null 2>&1; then
+    if ! command -v add-apt-repository >/dev/null 2>&1; then
+      DEBIAN_FRONTEND=noninteractive apt-get update >> "$log" 2>&1 || true
+      DEBIAN_FRONTEND=noninteractive apt-get install -y software-properties-common >> "$log" 2>&1 || true
+    fi
+    if command -v add-apt-repository >/dev/null 2>&1 && grep -qi '^ID=ubuntu' /etc/os-release 2>/dev/null; then
       add-apt-repository -y universe >> "$log" 2>&1 || true
     fi
     DEBIAN_FRONTEND=noninteractive apt-get update >> "$log" 2>&1 || true
@@ -1070,6 +1074,7 @@ menu_optimizar_vps(){
     echo -e "  ${NEON_GREEN}[1]${RESET} Activar BadVPN en 7300"
     echo -e "  ${NEON_GREEN}[2]${RESET} Activar BadVPN en 7200"
     echo -e "  ${NEON_GREEN}[3]${RESET} Apagar BadVPN"
+    echo -e "  ${NEON_GREEN}[4]${RESET} Ver detalle de instalación"
     echo -e "  ${RED}[0]${RESET} Regresar"; linea
     read -r -p " Opción: " opt
     case "$opt" in
@@ -1094,6 +1099,10 @@ menu_optimizar_vps(){
         systemctl disable "$BADVPN_SERVICE" 2>/dev/null || true
         cerrar_puerto_sistema "$BADVPN_PORT"
         BADVPN_STATE="OFF"; guardar_config; ok "BadVPN apagado y puerto liberado."; pausa ;;
+      4)
+        titulo; seccion "DETALLE DE INSTALACIÓN BADVPN"
+        if [ -s "$CONFIG_DIR/badvpn-install.log" ]; then tail -n 60 "$CONFIG_DIR/badvpn-install.log"; else info "Aún no hay un registro de instalación."; fi
+        pausa ;;
       0) return ;;
       *) fail "Opción inválida."; pausa ;;
     esac
