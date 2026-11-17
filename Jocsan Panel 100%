@@ -205,6 +205,54 @@ puerto_disponible(){
   ! puerto_ocupado_por_otro "$p" "$servicio"
 }
 
+# Toma un puerto para el panel sin requerir comandos externos. Solo se invoca
+# tras elegir explícitamente el puerto desde el menú. SSH/22 se protege para no
+# cortar el acceso administrativo al VPS.
+liberar_puerto_para_panel(){
+  local p="$1" unidad pid unidades="" salida=""
+  if [ "$p" = "22" ] || [ "$p" = "$SSHPORT" ]; then
+    fail "El puerto SSH $p está protegido y no puede ser tomado por el panel."
+    return 1
+  fi
+  mostrar_uso_puerto "$p"
+  info "Liberando el puerto $p para el panel..."
+  # Primero detener y deshabilitar el servicio systemd dueño del proceso.
+  while IFS= read -r unidad; do
+    [ -n "$unidad" ] || continue
+    pid="$(systemctl show -p MainPID --value "$unidad" 2>/dev/null || true)"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ]; then
+      salida="$(ss -H -ltnup "sport = :$p" 2>/dev/null || true)"
+      if grep -q "pid=$pid," <<< "$salida"; then
+        info "Deteniendo $unidad (usa el puerto $p)..."
+        systemctl stop "$unidad" >/dev/null 2>&1 || true
+        systemctl disable "$unidad" >/dev/null 2>&1 || true
+      fi
+    fi
+  done < <(systemctl list-units --all --type=service --no-legend --plain 2>/dev/null | awk '{print $1}')
+
+  # Si no pertenece a systemd, finaliza únicamente el proceso que escucha ese
+  # puerto. Nunca se ejecuta para el puerto SSH protegido arriba.
+  if command -v fuser >/dev/null 2>&1; then
+    fuser -k -n tcp "$p" >/dev/null 2>&1 || true
+    fuser -k -n udp "$p" >/dev/null 2>&1 || true
+  fi
+  sleep 1
+  if puerto_ocupado_por_otro "$p"; then
+    fail "No se pudo liberar el puerto $p. Sigue ocupado por:"
+    mostrar_uso_puerto "$p"
+    return 1
+  fi
+  ok "Puerto $p liberado para el panel."
+}
+
+tomar_puerto_para_panel(){
+  local p="$1" servicio="$2"
+  puerto_valido "$p" || return 1
+  puerto_disponible "$p" "$servicio" && return 0
+  liberar_puerto_para_panel "$p" || return 1
+  puerto_disponible "$p" "$servicio"
+}
+
 abrir_puerto_sistema(){
   local p="$1"
   info "Aplicando reglas de firewall para el puerto $p..."
@@ -278,7 +326,7 @@ instalar_servidor(){
   echo -e "  ${WHITE}Puerto BHTTP actual:${RESET} ${NEON_GREEN}${sugerido:-SIN ASIGNAR}${RESET}"
   read -r -p "$(echo -e " ${NEON_ORANGE}◆${RESET} Ingresa un puerto de 1 a 65535: ")" nuevo_puerto
   if [ -n "$nuevo_puerto" ]; then
-    if puerto_valido "$nuevo_puerto" && puerto_disponible "$nuevo_puerto" "$SERVICE"; then
+    if puerto_valido "$nuevo_puerto" && tomar_puerto_para_panel "$nuevo_puerto" "$SERVICE"; then
       PUERTO="$nuevo_puerto"
     else
       fail "Puerto inválido, repetido o usado por otro servicio."
@@ -1013,7 +1061,7 @@ menu_optimizar_vps(){
     case "$opt" in
       1|2)
         [ "$opt" = "1" ] && BADVPN_PORT=7300 || BADVPN_PORT=7200
-        if ! puerto_disponible "$BADVPN_PORT" "$BADVPN_SERVICE"; then
+        if ! tomar_puerto_para_panel "$BADVPN_PORT" "$BADVPN_SERVICE"; then
           fail "El puerto $BADVPN_PORT ya está en uso por BHTTP, WebSocket u otro programa."; pausa; continue
         fi
         instalar_badvpn || { pausa; continue; }
@@ -1934,7 +1982,7 @@ ws_instalar(){
   echo -e "  ${WHITE}Puerto actual:${RESET} ${NEON_GREEN}${WSPORT:-SIN ASIGNAR}${RESET}"
   read -r -p "$(echo -e " ${NEON_ORANGE}◆${RESET} Puerto WebSocket (1-65535): ")" nuevo
   if [ -n "$nuevo" ]; then
-    if puerto_valido "$nuevo" && puerto_disponible "$nuevo" "$WS_SERVICE"; then
+    if puerto_valido "$nuevo" && tomar_puerto_para_panel "$nuevo" "$WS_SERVICE"; then
       WSPORT="$nuevo"
     else
       fail "Puerto inválido, repetido o usado por otro servicio."
@@ -2126,7 +2174,7 @@ menu_principal(){
         else
           if ! puerto_valido "$PUERTO"; then
             fail "BHTTP no tiene puerto asignado. Usa la opción 1 para activarlo y elegir uno."
-          elif ! puerto_disponible "$PUERTO" "$SERVICE"; then
+          elif ! tomar_puerto_para_panel "$PUERTO" "$SERVICE"; then
             fail "El puerto $PUERTO ahora lo usa otro servicio. Elige otro en la opción 1."
           else
             systemctl enable "$SERVICE" >/dev/null 2>&1 || true; systemctl start "$SERVICE" 2>/dev/null || true
