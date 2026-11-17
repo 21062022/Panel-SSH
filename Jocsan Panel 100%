@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# HAZAEL MORENO MULTI SCRIPT - BHTTP & SSH
+# HAZAEL MORENO MULTI SCRIPT - BHTTP & BADVPN
 # Versión PRO • MONITOR EN LÍNEA 2s • ROOT EXCLUIDO • SSH/BHTTP
 # ==============================================================================
 
@@ -289,15 +289,29 @@ cerrar_puerto_sistema(){
 }
 
 instalar_badvpn(){
-  apt-get update -y >/dev/null 2>&1 || true
-  apt-get install -y badvpn iptables-persistent >/dev/null 2>&1 || true
   local bin=""
   for x in /usr/bin/badvpn-udpgw /usr/local/bin/badvpn-udpgw; do
     [ -x "$x" ] && { bin="$x"; break; }
   done
   [ -z "$bin" ] && bin="$(command -v badvpn-udpgw 2>/dev/null || true)"
   if [ -z "$bin" ]; then
-    fail "No se encontró badvpn-udpgw en el sistema."
+    local log="$CONFIG_DIR/badvpn-install.log"
+    info "Instalando BadVPN UDP Gateway (solo la primera vez)..."
+    mkdir -p "$CONFIG_DIR"
+    # En Ubuntu, badvpn está en el repositorio universe. No ocultamos errores:
+    # quedan registrados para que el panel informe una causa útil.
+    if command -v add-apt-repository >/dev/null 2>&1; then
+      add-apt-repository -y universe >> "$log" 2>&1 || true
+    fi
+    DEBIAN_FRONTEND=noninteractive apt-get update >> "$log" 2>&1 || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y badvpn iptables-persistent >> "$log" 2>&1 || true
+    for x in /usr/bin/badvpn-udpgw /usr/local/bin/badvpn-udpgw; do
+      [ -x "$x" ] && { bin="$x"; break; }
+    done
+    [ -z "$bin" ] && bin="$(command -v badvpn-udpgw 2>/dev/null || true)"
+  fi
+  if [ -z "$bin" ]; then
+    fail "No se pudo instalar badvpn-udpgw. Detalle: $CONFIG_DIR/badvpn-install.log"
     return 1
   fi
   cat > "$BADVPN_UNIT" <<EOF
@@ -1271,6 +1285,18 @@ ram_info(){
   free -m 2>/dev/null | awk '/^Mem:/{t=$2; a=$7; if(a=="")a=$4; u=t-a; p=(t>0)?u*100/t:0; printf "%d %d %d", u, t, p}'
 }
 
+# Uso real de CPU entre dos muestras. La carga (load average) no equivale a
+# porcentaje: en un VPS de un núcleo, carga 1.11 antes se dibujaba como 100%.
+cpu_uso_real(){
+  local _ u1 n1 s1 i1 iw1 ir1 si1 st1 u2 n2 s2 i2 iw2 ir2 si2 st2 t1 t2 idle1 idle2
+  read -r _ u1 n1 s1 i1 iw1 ir1 si1 st1 _ < /proc/stat 2>/dev/null || { echo 0; return; }
+  sleep 0.15
+  read -r _ u2 n2 s2 i2 iw2 ir2 si2 st2 _ < /proc/stat 2>/dev/null || { echo 0; return; }
+  t1=$((u1+n1+s1+i1+iw1+ir1+si1+st1)); t2=$((u2+n2+s2+i2+iw2+ir2+si2+st2))
+  idle1=$((i1+iw1)); idle2=$((i2+iw2))
+  awk -v dt="$((t2-t1))" -v di="$((idle2-idle1))" 'BEGIN { if(dt<=0) print 0; else { p=(dt-di)*100/dt; if(p<0)p=0; if(p>100)p=100; printf "%d",p } }'
+}
+
 barra_uso(){
   local pct="${1:-0}" n i out="" color
   [[ "$pct" =~ ^[0-9]+$ ]] || pct=0
@@ -1335,7 +1361,7 @@ panel_estado(){
   [ -n "$up" ] || up="N/D"
   load="$(cut -d' ' -f1 /proc/loadavg 2>/dev/null || echo 0)"
   cpu_n="$(nproc 2>/dev/null || echo 1)"
-  cpu_p="$(awk -v l="$load" -v n="$cpu_n" 'BEGIN{p=l*100/n; if(p>100)p=100; printf "%d",p}')"
+  cpu_p="$(cpu_uso_real)"
   read -r ram_u ram_t ram_p <<< "$(ram_info)"
   : "${ram_u:=0}"; : "${ram_t:=0}"; : "${ram_p:=0}"
   disco_p="$(df -P / 2>/dev/null | awk 'NR==2{gsub("%","",$5); print $5}')"
