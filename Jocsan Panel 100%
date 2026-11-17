@@ -125,6 +125,24 @@ EOF
 exec sudo bash /usr/local/bin/intalar.sh "$@"
 EOF
   chmod +x "$ADM_BIN" "$ADMIN_BIN"
+  # Algunos VPS ya traen /bin/adm de otro panel (por ejemplo, uno que llama
+  # «cgh»). Instalamos el acceso del panel también en /usr/bin y /bin para que
+  # adm/admin siempre abran este panel, aun con un PATH no estándar.
+  local cmd destino respaldo
+  for cmd in adm admin; do
+    for destino in "/usr/bin/$cmd" "/bin/$cmd"; do
+      if [ -e "$destino" ] && ! grep -qs 'BHTTP-PANEL-COMMAND' "$destino"; then
+        respaldo="$CONFIG_DIR/${cmd}.comando-anterior"
+        [ -e "$respaldo" ] || cp -a "$destino" "$respaldo" 2>/dev/null || true
+      fi
+      cat > "$destino" <<EOF
+#!/usr/bin/env bash
+# BHTTP-PANEL-COMMAND
+exec sudo bash /usr/local/bin/intalar.sh "\$@"
+EOF
+      chmod +x "$destino" 2>/dev/null || true
+    done
+  done
   for rc in /root/.bashrc /root/.zshrc /etc/bash.bashrc; do
     if [ -f "$rc" ] || [ "$rc" = "/root/.bashrc" ]; then
       touch "$rc" 2>/dev/null || true
